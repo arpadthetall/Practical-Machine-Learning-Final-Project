@@ -1,0 +1,249 @@
+---
+title: "Practical Machine Learning Final Project"
+author: "Arpad Kovacs"
+date: "October 20, 2017"
+output: pdf_document
+---
+
+#Human Activity Recognition
+
+
+##Prediction with Machine Learning Models
+
+
+###Background
+
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset).
+
+
+###Data
+
+
+The training data for this project are available here:
+
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv
+
+The test data are available here:
+
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv
+
+
+The data for this project come from this source: http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har. If you use the document you create for this class for any purpose please cite them as they have been very generous in allowing their data to be used for this kind of assignment.
+
+
+###Setup R environment
+
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+library(caret)
+library(randomForest)
+library(rpart)
+library(rpart.plot)
+library(rattle)
+library(knitr)
+library(corrplot)
+setwd("/Users/akovacs/Documents/Personal/Coursera/Practical Machine Learning")
+rm(list=ls())
+set.seed(12345)
+```
+
+
+###Data Conditioning
+
+
+This section describes the following steps.
+
+1. Downloading the data
+2. Cleaning the data
+a. Removing variables that do not provide useful information
+b. Removing variables with near zero variance
+c. Removing variables that are mostly N/A
+d. Removing variables that are highly correlated
+3. Splitting the training dataset to training and validation
+
+
+####Downloading
+
+
+The dataset were downloaded from the provided links. 
+
+```{r}
+#Web address of the files
+TrainDL <- "http://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+TestDL  <- "http://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+
+#Download the datasets
+train <- read.csv(url(TrainDL))
+testing  <- read.csv(url(TestDL))
+```
+
+
+####Cleaning
+
+
+```{r}
+#Removing variables that are only for identification purposes (columns 1 through 5)
+train <- train[, -(1:5)]
+dim(train)
+
+#Removing variables with Near Zero Variance
+NZV <- nearZeroVar(train)
+train <- train[, -NZV]
+dim(train)
+
+#Removing variables with mostly NA (90% threshold)
+VarNA <- sapply(train, function(x) mean(is.na(x))) > 0.9
+train <- train[, VarNA==FALSE]
+
+#Analyzing if variables are correlated
+corMat <- cor(train[, -54])
+corrplot(corMat, order="FPC", method="color", type="lower",
+         tl.cex=0.5, tl.col=rgb(0, 0, 0))
+#High correlation between variables does not seem to be an issue. Variables will not be
+#removed for this reason.
+```
+
+
+The training dataset was further divided into a training set (70%) and a validation set (30%). The testing dataset was only used to obtain the quiz results.
+
+
+```{r}
+#Partition the training dataset 
+inTrain  <- createDataPartition(train$classe, p=0.7, list=FALSE)
+training <- train[inTrain, ]
+validating  <- train[-inTrain, ]
+
+dim(training)
+dim(validating)
+```
+
+
+##Prediction Models
+
+Three prediction models were used to find the one with the best accuracy. The models were built using the training data set. Those models were applied to the validating data set. The model with the best performance on the validatig data set was than used to make the predictions on the testing data set.
+
+* Random Forest
+* Decision Trees
+* Generalized Boosted Model
+
+
+###Random Forest
+
+
+```{r, warning=FALSE, message=FALSE}
+set.seed(33633)
+
+# Check for existing model file
+modelRF <- "modelRF.RData"
+if (!file.exists(modelRF)) {
+
+    # If no file, set up parallel clusters  
+    require(parallel)
+    require(doParallel)
+    cl <- makeCluster(detectCores() - 1)
+    registerDoParallel(cl)
+    
+    #Fit Random Forests model on training data
+    RFCont <- trainControl(method="cv", number=3, verboseIter=FALSE)
+    modelRF <- train(classe ~ ., data=training, method="rf", trControl=RFCont)
+    
+    save(modelRF, file = "modelRF.RData")
+    
+    stopCluster(cl)
+} else {
+    # Load model file if already exists  
+    load(file = "modelRF.RData", verbose = TRUE)
+}
+
+modelRF$finalModel
+
+#Prediction on validating data set
+predRF <- predict(modelRF, newdata=validating)
+CM_RF <- confusionMatrix(predRF, validating$classe)
+CM_RF
+
+#Confusion Matrix results plotted
+plot(CM_RF$table, col=CM_RF$byClass,
+     main=paste("RF Accuracy = ", round(CM_RF$overall['Accuracy'], 3)))
+```
+
+
+###Decision Trees
+
+
+```{r, warning=FALSE, message=FALSE}
+set.seed(33633)
+
+modelDT <- rpart(classe ~ ., data=training, method="class")
+
+fancyRpartPlot(modelDT)
+
+predDT <- predict(modelDT, newdata=validating, type="class")
+CM_DT <- confusionMatrix(predDT, validating$classe)
+CM_DT
+
+#Confusion Matrix results plotted
+plot(CM_DT$table, col=CM_DT$byClass,
+     main=paste("DT Accuracy = ", round(CM_DT$overall['Accuracy'], 3)))
+```
+
+
+###Generalized Boosted Model
+
+
+```{r, message=FALSE, warning=FALSE}
+set.seed(33633)
+
+
+# Check for existing model file
+modelGBM <- "modelGBM.RData"
+if (!file.exists(modelGBM)) {
+
+    # If no file, set up parallel clusters  
+    require(parallel)
+    require(doParallel)
+    cl <- makeCluster(detectCores() - 1)
+    registerDoParallel(cl)
+    
+    #Fit GBM model on training data
+    GBMCont <- trainControl(method = "repeatedcv", number = 5, repeats = 1)
+    modelGBM  <- train(classe ~ ., data=training, method = "gbm",
+                    trControl = GBMCont, verbose = FALSE)
+    
+    save(modelGBM, file = "modelGBM.RData")
+    
+    stopCluster(cl)
+} else {
+    # Load model file if already exists  
+    load(file = "modelGBM.RData", verbose = TRUE)
+}
+
+#Prediction on validating data set
+predGBM <- predict(modelGBM, newdata=validating)
+CM_GBM <- confusionMatrix(predGBM, validating$classe)
+CM_GBM
+
+#Confusion Matrix results plotted
+plot(CM_GBM$table, col=CM_GBM$byClass,
+     main=paste("GBM Accuracy = ", round(CM_GBM$overall['Accuracy'], 3)))
+```
+
+##Selected Model Applied to Test Data
+
+
+###Model Selection based on Accuracy
+
+1. Random Forest:99.6%
+2. Decision Trees: 73.7%
+3. Generalized Boosted Model: 98.4%
+
+The model with the highest accuracy is the Random Forest model. This model will be used to perform the prediction on the test data.
+
+
+```{r}
+predTestRF <- predict(modelRF, newdata=testing)
+predTestRF
+```
+
+
+The results from the testing data set were checked with the course project prediction quiz and yielded 100% correct answers.
